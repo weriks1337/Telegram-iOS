@@ -9,6 +9,7 @@ permissions:
 
 jobs:
   build:
+    name: Build Telegram iOS IPA
     runs-on: xcode-27
     timeout-minutes: 360
 
@@ -22,17 +23,20 @@ jobs:
 
       - name: Initialize submodules
         run: |
+          set -euo pipefail
           git submodule sync --recursive
           git submodule update --init --recursive
 
-      - name: Select required Xcode
+      - name: Select Xcode
         run: |
+          set -euo pipefail
+
           XCODE_VERSION=$(python3 -c "import json; print(json.load(open('versions.json'))['xcode'])")
           XCODE_PATH="/Applications/Xcode_${XCODE_VERSION}.app/Contents/Developer"
 
           if [ ! -d "$XCODE_PATH" ]; then
             echo "Required Xcode not found: $XCODE_PATH"
-            ls -d /Applications/Xcode*.app
+            ls -d /Applications/Xcode*.app || true
             exit 1
           fi
 
@@ -40,82 +44,76 @@ jobs:
           xcodebuild -version
           python3 --version
 
-      - name: Install Bazelisk
-        run: |
-          if ! command -v bazelisk >/dev/null 2>&1; then
-            brew install bazelisk
-          fi
-
-      - name: Prepare source directory
-        run: |
-          set -euo pipefail
-
-          SOURCE_DIR="/Users/Shared/telegram-ios"
-
-          sudo rm -rf "$SOURCE_DIR"
-          sudo mkdir -p "$SOURCE_DIR"
-          sudo cp -R "$GITHUB_WORKSPACE/." "$SOURCE_DIR/"
-
-      - name: Build IPA
+      - name: Prepare build configuration
         env:
           TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
           TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
         run: |
           set -euo pipefail
 
-          SOURCE_DIR="/Users/Shared/telegram-ios"
-          cd "$SOURCE_DIR"
-
           if [ -z "$TELEGRAM_API_ID" ] || [ -z "$TELEGRAM_API_HASH" ]; then
-            echo "Telegram API secrets are missing"
+            echo "ERROR: TELEGRAM_API_ID or TELEGRAM_API_HASH secret is missing"
             exit 1
           fi
-
-          BUILD_NUMBER_OFFSET=$(cat build_number_offset)
-          COMMIT_COUNT=$(git rev-list --count HEAD)
-          BUILD_NUMBER=$((COMMIT_COUNT + BUILD_NUMBER_OFFSET))
-
-          echo "Build number: $BUILD_NUMBER"
 
           python3 - <<'PY'
           import json
           import os
 
-          with open("build-system/appstore-configuration.json") as f:
+          with open("build-system/appstore-configuration.json", encoding="utf-8") as f:
               config = json.load(f)
 
-          config["api_id"] = os.environ["TELEGRAM_API_ID"]
+          config["api_id"] = int(os.environ["TELEGRAM_API_ID"])
           config["api_hash"] = os.environ["TELEGRAM_API_HASH"]
 
-          with open("build-system/appstore-configuration-ci.json", "w") as f:
+          with open("build-system/appstore-configuration-ci.json", "w", encoding="utf-8") as f:
               json.dump(config, f, indent=2)
+
+          print("Build configuration prepared")
           PY
+
+      - name: Import build certificates
+        run: |
+          set -euo pipefail
 
           python3 build-system/Make/ImportCertificates.py \
             --path build-system/fake-codesigning/certs
 
+      - name: Calculate build number
+        id: build_number
+        run: |
+          set -euo pipefail
+
+          BUILD_NUMBER_OFFSET=$(cat build_number_offset)
+          COMMIT_COUNT=$(git rev-list --count HEAD)
+          BUILD_NUMBER=$((COMMIT_COUNT + BUILD_NUMBER_OFFSET))
+
+          echo "value=$BUILD_NUMBER" >> "$GITHUB_OUTPUT"
+          echo "Build number: $BUILD_NUMBER"
+
+      - name: Build device IPA
+        run: |
+          set -euo pipefail
+
           python3 -u build-system/Make/Make.py \
-            --bazelUserRoot="/private/var/tmp/_bazel_containerhost" \
+            --bazelUserRoot="$RUNNER_TEMP/bazel" \
             build \
             --configurationPath="build-system/appstore-configuration-ci.json" \
             --codesigningInformationPath="build-system/fake-codesigning" \
             --configuration=release_arm64 \
-            --buildNumber="$BUILD_NUMBER" \
+            --buildNumber="${{ steps.build_number.outputs.value }}" \
             --outputBuildArtifactsPath="build/artifacts"
 
           test -s build/artifacts/Telegram.ipa
 
-          mkdir -p "$GITHUB_WORKSPACE/ipa-output"
-          cp build/artifacts/Telegram.ipa \
-            "$GITHUB_WORKSPACE/ipa-output/Telegram.ipa"
+          echo "IPA created:"
+          ls -lh build/artifacts/Telegram.ipa
 
-          echo "IPA successfully created"
-          ls -lh "$GITHUB_WORKSPACE/ipa-output/Telegram.ipa"
-
-      - name: Upload IPA artifact
+      - name: Upload IPA
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: AyuGram-iOS-IPA
-          path: ipa-output/Telegram.ipa
+          path: build/artifacts/Telegram.ipa
           if-no-files-found: error
           retention-days: 7
