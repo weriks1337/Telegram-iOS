@@ -13,14 +13,24 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: ayugram-ios
-          submodules: recursive
+          submodules: false
           fetch-depth: 0
 
-      - name: Show selected revision
+      - name: Verify branch and submodule URL
         run: |
+          echo "CURRENT BRANCH:"
           git branch --show-current
+
+          echo "CURRENT COMMIT:"
           git log -1 --oneline
-          grep -A 2 'TgVoipWebrtc/tgcalls' .gitmodules
+
+          echo "TGCALLS URL:"
+          git config -f .gitmodules --get submodule.submodules/TgVoipWebrtc/tgcalls.url
+
+      - name: Initialize submodules
+        run: |
+          git submodule sync --recursive
+          git submodule update --init --recursive
 
       - name: Select Xcode
         run: |
