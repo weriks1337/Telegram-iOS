@@ -16,14 +16,10 @@ jobs:
           submodules: false
           fetch-depth: 0
 
-      - name: Verify branch and submodule URL
+      - name: Verify configuration
         run: |
-          echo "CURRENT BRANCH:"
+          echo "BRANCH:"
           git branch --show-current
-
-          echo "CURRENT COMMIT:"
-          git log -1 --oneline
-
           echo "TGCALLS URL:"
           git config -f .gitmodules --get submodule.submodules/TgVoipWebrtc/tgcalls.url
 
